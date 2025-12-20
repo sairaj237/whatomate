@@ -36,6 +36,10 @@ frontend/dist/
 frontend/.env.local
 frontend/.env.*.local
 
+# Embedded frontend build (generated during build)
+internal/frontend/dist/*
+!internal/frontend/dist/.gitkeep
+
 # Logs
 *.log
 logs/
