@@ -2,6 +2,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useContactsStore } from '@/stores/contacts'
 import { usersService, chatbotService } from '@/services/api'
 import { Button } from '@/components/ui/button'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
@@ -55,6 +56,7 @@ import { getInitials } from '@/lib/utils'
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
+const contactsStore = useContactsStore()
 const isCollapsed = ref(false)
 const isUserMenuOpen = ref(false)
 const isUpdatingAvailability = ref(false)
@@ -114,6 +116,11 @@ const setAvailability = async (checked: boolean) => {
           ? `${transfersReturned} transfer(s) returned to queue`
           : 'You will not receive new transfer assignments'
       })
+
+      // Refresh contacts list if transfers were returned to queue
+      if (transfersReturned > 0) {
+        contactsStore.fetchContacts()
+      }
     }
   } catch (error) {
     toast.error('Error', {
