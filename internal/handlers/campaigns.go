@@ -10,6 +10,7 @@ import (
 	"github.com/shridarpatil/whatomate/pkg/whatsapp"
 	"github.com/valyala/fasthttp"
 	"github.com/zerodha/fastglue"
+	"gorm.io/gorm"
 )
 
 // CampaignRequest represents campaign create/update request
@@ -699,25 +700,63 @@ func (a *App) processCampaign(campaignID uuid.UUID) {
 			return
 		}
 
+		// Get or create contact for this recipient
+		contact, _ := a.getOrCreateContact(campaign.OrganizationID, recipient.PhoneNumber, recipient.RecipientName)
+		if contact == nil {
+			a.Log.Error("Failed to get or create contact", "phone", recipient.PhoneNumber)
+			a.DB.Model(&recipient).Updates(map[string]interface{}{
+				"status":        "failed",
+				"error_message": "Failed to create contact",
+			})
+			failedCount++
+			continue
+		}
+
 		// Send template message
-		messageID, err := a.sendTemplateMessage(&account, campaign.Template, &recipient)
+		waMessageID, err := a.sendTemplateMessage(&account, campaign.Template, &recipient)
 		now := time.Now()
+
+		// Create Message record with campaign_id in metadata
+		message := models.Message{
+			OrganizationID:    campaign.OrganizationID,
+			WhatsAppAccount:   campaign.WhatsAppAccount,
+			ContactID:         contact.ID,
+			WhatsAppMessageID: waMessageID,
+			Direction:         "outgoing",
+			MessageType:       "template",
+			TemplateParams:    recipient.TemplateParams,
+			Metadata: models.JSONB{
+				"campaign_id":    campaignID.String(),
+				"recipient_name": recipient.RecipientName,
+			},
+		}
+		if campaign.Template != nil {
+			message.TemplateName = campaign.Template.Name
+		}
 
 		if err != nil {
 			a.Log.Error("Failed to send message", "error", err, "recipient", recipient.PhoneNumber)
+			message.Status = "failed"
+			message.ErrorMessage = err.Error()
 			a.DB.Model(&recipient).Updates(map[string]interface{}{
 				"status":        "failed",
 				"error_message": err.Error(),
 			})
 			failedCount++
 		} else {
-			a.Log.Info("Message sent", "recipient", recipient.PhoneNumber, "message_id", messageID)
+			a.Log.Info("Message sent", "recipient", recipient.PhoneNumber, "message_id", waMessageID)
+			message.Status = "sent"
 			a.DB.Model(&recipient).Updates(map[string]interface{}{
 				"status":               "sent",
-				"whats_app_message_id": messageID,
+				"whats_app_message_id": waMessageID,
 				"sent_at":              now,
 			})
 			sentCount++
+		}
+
+		// Save message record
+		if err := a.DB.Create(&message).Error; err != nil {
+			a.Log.Error("Failed to save campaign message", "error", err, "recipient", recipient.PhoneNumber)
 		}
 
 		// Update campaign counts
@@ -740,6 +779,34 @@ func (a *App) processCampaign(campaignID uuid.UUID) {
 	})
 
 	a.Log.Info("Campaign completed", "campaign_id", campaignID, "sent", sentCount, "failed", failedCount)
+}
+
+// incrementCampaignStat increments the appropriate campaign counter based on status
+func (a *App) incrementCampaignStat(campaignID string, status string) {
+	campaignUUID, err := uuid.Parse(campaignID)
+	if err != nil {
+		a.Log.Error("Invalid campaign ID for stats update", "campaign_id", campaignID)
+		return
+	}
+
+	var column string
+	switch status {
+	case "delivered":
+		column = "delivered_count"
+	case "read":
+		column = "read_count"
+	case "failed":
+		column = "failed_count"
+	default:
+		// sent is already counted during processCampaign
+		return
+	}
+
+	if err := a.DB.Model(&models.BulkMessageCampaign{}).
+		Where("id = ?", campaignUUID).
+		Update(column, gorm.Expr(column+" + 1")).Error; err != nil {
+		a.Log.Error("Failed to increment campaign stat", "error", err, "campaign_id", campaignID, "column", column)
+	}
 }
 
 // sendTemplateMessage sends a template message via WhatsApp Cloud API

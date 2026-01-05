@@ -383,6 +383,13 @@ func (a *App) updateMessageStatus(whatsappMsgID, statusValue string, errors []We
 
 	a.Log.Info("Updated message status", "message_id", message.ID, "status", statusValue)
 
+	// Update campaign stats if this is a campaign message
+	if message.Metadata != nil {
+		if campaignID, ok := message.Metadata["campaign_id"].(string); ok && campaignID != "" {
+			a.incrementCampaignStat(campaignID, statusValue)
+		}
+	}
+
 	// Broadcast status update via WebSocket
 	if a.WSHub != nil {
 		a.WSHub.BroadcastToOrg(message.OrganizationID, websocket.WSMessage{
