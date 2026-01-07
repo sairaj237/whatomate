@@ -222,8 +222,13 @@ async function executeCustomAction(action: CustomAction) {
 
     // Handle different result types
     if (result.redirect_url) {
-      // Open URL action result
-      window.open(result.redirect_url, '_blank')
+      // Open URL action result - prepend base path for relative URLs
+      let redirectUrl = result.redirect_url
+      if (redirectUrl.startsWith('/api/')) {
+        const basePath = ((window as any).__BASE_PATH__ ?? '').replace(/\/$/, '')
+        redirectUrl = basePath + redirectUrl
+      }
+      window.open(redirectUrl, '_blank')
     }
 
     if (result.clipboard) {
