@@ -1268,3 +1268,106 @@ func (a *App) AssignContact(r *fastglue.Request) error {
 		"assigned_user_id": req.UserID,
 	})
 }
+
+// ContactSessionDataResponse represents the session data for a contact's info panel
+type ContactSessionDataResponse struct {
+	SessionID   *uuid.UUID     `json:"session_id,omitempty"`
+	FlowID      *uuid.UUID     `json:"flow_id,omitempty"`
+	FlowName    string         `json:"flow_name,omitempty"`
+	SessionData map[string]any `json:"session_data"`
+	PanelConfig map[string]any `json:"panel_config"`
+}
+
+// GetContactSessionData returns session data and panel configuration for a contact
+// Used by the contact info panel in the chat view
+func (a *App) GetContactSessionData(r *fastglue.Request) error {
+	orgID := r.RequestCtx.UserValue("organization_id").(uuid.UUID)
+	userID, _ := r.RequestCtx.UserValue("user_id").(uuid.UUID)
+	userRole, _ := r.RequestCtx.UserValue("role").(models.Role)
+	contactIDStr := r.RequestCtx.UserValue("id").(string)
+
+	contactID, err := uuid.Parse(contactIDStr)
+	if err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Invalid contact ID", nil, "")
+	}
+
+	// Verify contact belongs to org (and to agent if role is agent)
+	var contact models.Contact
+	query := a.DB.Where("id = ? AND organization_id = ?", contactID, orgID)
+	if userRole == models.RoleAgent {
+		query = query.Where("assigned_user_id = ?", userID)
+	}
+	if err := query.First(&contact).Error; err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusNotFound, "Contact not found", nil, "")
+	}
+
+	response := ContactSessionDataResponse{
+		SessionData: make(map[string]any),
+		PanelConfig: map[string]any{"sections": []any{}},
+	}
+
+	// Get the most recent completed or active session for this contact
+	var session models.ChatbotSession
+	err = a.DB.Where("contact_id = ? AND organization_id = ?", contactID, orgID).
+		Where("status IN ?", []models.SessionStatus{models.SessionStatusActive, models.SessionStatusCompleted}).
+		Order("created_at DESC").
+		First(&session).Error
+
+	if err == nil {
+		response.SessionID = &session.ID
+		response.FlowID = session.CurrentFlowID
+
+		// Get the flow to retrieve panel config
+		// First try current_flow_id, then fall back to _flow_id in session_data
+		var flowID *uuid.UUID
+		if session.CurrentFlowID != nil {
+			flowID = session.CurrentFlowID
+		} else if flowIDStr, ok := session.SessionData["_flow_id"].(string); ok {
+			if parsedID, err := uuid.Parse(flowIDStr); err == nil {
+				flowID = &parsedID
+			}
+		}
+
+		if flowID != nil {
+			// Use cached flow to avoid DB query
+			flow, err := a.getChatbotFlowByIDCached(orgID, *flowID)
+			if err == nil && flow != nil {
+				response.FlowName = flow.Name
+				response.FlowID = flowID
+
+				// Use panel config directly from flow (it's already JSONB/map)
+				if len(flow.PanelConfig) > 0 {
+					response.PanelConfig = flow.PanelConfig
+
+					// Only include session data for configured fields (reduce payload)
+					if session.SessionData != nil {
+						configuredKeys := make(map[string]bool)
+						if sections, ok := flow.PanelConfig["sections"].([]any); ok {
+							for _, sec := range sections {
+								if section, ok := sec.(map[string]any); ok {
+									if fields, ok := section["fields"].([]any); ok {
+										for _, f := range fields {
+											if field, ok := f.(map[string]any); ok {
+												if key, ok := field["key"].(string); ok {
+													configuredKeys[key] = true
+												}
+											}
+										}
+									}
+								}
+							}
+						}
+						// Copy only configured fields to response
+						for key := range configuredKeys {
+							if val, exists := session.SessionData[key]; exists {
+								response.SessionData[key] = val
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return r.SendEnvelope(response)
+}
