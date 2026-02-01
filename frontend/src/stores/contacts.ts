@@ -285,6 +285,37 @@ export const useContactsStore = defineStore('contacts', () => {
     }
   }
 
+  async function deleteContact(contactId: string) {
+    try {
+      await contactsService.delete(contactId)
+      // Remove contact from local store
+      contacts.value = contacts.value.filter(c => c.id !== contactId)
+      
+      // Clear current contact if it was the deleted one
+      if (currentContact.value?.id === contactId) {
+        currentContact.value = null
+        clearMessages()
+      }
+      
+      return true
+    } catch (error) {
+      console.error('Failed to delete contact:', error)
+      throw error
+    }
+  }
+
+  // Handle WebSocket contact_deleted event
+  function handleContactDeleted(contactId: string) {
+    // Remove contact from local store
+    contacts.value = contacts.value.filter(c => c.id !== contactId)
+    
+    // Clear current contact if it was the deleted one
+    if (currentContact.value?.id === contactId) {
+      currentContact.value = null
+      clearMessages()
+    }
+  }
+
   return {
     contacts,
     currentContact,
@@ -315,6 +346,8 @@ export const useContactsStore = defineStore('contacts', () => {
     clearMessages,
     setReplyingTo,
     clearReplyingTo,
-    updateMessageReactions
+    updateMessageReactions,
+    deleteContact,
+    handleContactDeleted
   }
 })

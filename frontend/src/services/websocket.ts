@@ -60,6 +60,9 @@ const WS_TYPE_CAMPAIGN_STATS_UPDATE = 'campaign_stats_update'
 // Permission types
 const WS_TYPE_PERMISSIONS_UPDATED = 'permissions_updated'
 
+// Contact management types
+const WS_TYPE_CONTACT_DELETED = 'contact_deleted'
+
 interface WSMessage {
   type: string
   payload: any
@@ -164,6 +167,9 @@ class WebSocketService {
           break
         case WS_TYPE_PERMISSIONS_UPDATED:
           this.handlePermissionsUpdated()
+          break
+        case WS_TYPE_CONTACT_DELETED:
+          this.handleContactDeleted(store, message.payload)
           break
         default:
           // Unknown message type, ignore
@@ -374,19 +380,21 @@ class WebSocketService {
     const authStore = useAuthStore()
 
     // Refresh user data from server
-    const success = await authStore.refreshUserData()
+    await authStore.fetchUser()
+  }
 
-    if (success) {
-      toast.info('Permissions Updated', {
-        description: 'Your permissions have been updated. The page will refresh.',
-        duration: 3000
-      })
+  private handleContactDeleted(store: ReturnType<typeof useContactsStore>, payload: any) {
+    const contactId = payload.contact_id
+    if (!contactId) return
 
-      // Reload the page after a short delay to apply new permissions
-      setTimeout(() => {
-        window.location.reload()
-      }, 1500)
-    }
+    // Use the store's handleContactDeleted method
+    store.handleContactDeleted(contactId)
+
+    // Show notification to other users
+    toast.info('Chat deleted', {
+      description: `${payload.profile_name || payload.phone_number} chat has been deleted`,
+      duration: 4000
+    })
   }
 
   onCampaignStatsUpdate(callback: (payload: any) => void) {

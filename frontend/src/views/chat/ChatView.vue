@@ -78,7 +78,8 @@ import {
   Mail,
   Globe,
   Code,
-  RotateCw
+  RotateCw,
+  Trash2
 } from 'lucide-vue-next'
 import { getInitials } from '@/lib/utils'
 import { useColorMode } from '@/composables/useColorMode'
@@ -126,6 +127,8 @@ const isAssignDialogOpen = ref(false)
 const isTransferring = ref(false)
 const isResuming = ref(false)
 const isInfoPanelOpen = ref(false)
+const isDeleteDialogOpen = ref(false)
+const isDeleting = ref(false)
 const contactSessionData = ref<any>(null)
 
 // File upload state
@@ -768,6 +771,25 @@ async function resumeChatbot() {
   }
 }
 
+async function deleteContact() {
+  if (!contactsStore.currentContact) return
+  
+  isDeleting.value = true
+  try {
+    await contactsStore.deleteContact(contactsStore.currentContact.id)
+    toast.success('Chat deleted successfully')
+    isDeleteDialogOpen.value = false
+    
+    // Navigate back to chat list
+    router.push('/chat')
+  } catch (error: any) {
+    const message = error.response?.data?.message || 'Failed to delete chat'
+    toast.error(message)
+  } finally {
+    isDeleting.value = false
+  }
+}
+
 function scrollToBottom(instant = false) {
   nextTick(() => {
     if (messagesEndRef.value) {
@@ -1365,6 +1387,14 @@ async function sendMediaMessage() {
                   <Info class="mr-2 h-4 w-4" />
                   <span>{{ isInfoPanelOpen ? 'Hide contact details' : 'View contact details' }}</span>
                 </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem 
+                  @click="isDeleteDialogOpen = true" 
+                  class="text-destructive focus:text-destructive"
+                >
+                  <Trash2 class="mr-2 h-4 w-4" />
+                  <span>Delete chat</span>
+                </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -1958,6 +1988,37 @@ async function sendMediaMessage() {
             </Button>
           </div>
         </div>
+      </DialogContent>
+    </Dialog>
+
+    <!-- Delete Chat Confirmation Dialog -->
+    <Dialog v-model:open="isDeleteDialogOpen">
+      <DialogContent class="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Delete Chat</DialogTitle>
+          <DialogDescription>
+            Are you sure you want to delete this chat? This action cannot be undone and will permanently remove all messages and contact information.
+          </DialogDescription>
+        </DialogHeader>
+        <div class="py-4">
+          <div class="flex items-center gap-3 p-3 bg-destructive/10 rounded-lg">
+            <Trash2 class="h-5 w-5 text-destructive" />
+            <div>
+              <p class="font-medium">{{ contactsStore.currentContact?.profile_name || contactsStore.currentContact?.phone_number }}</p>
+              <p class="text-sm text-muted-foreground">{{ contactsStore.currentContact?.phone_number }}</p>
+            </div>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" @click="isDeleteDialogOpen = false" :disabled="isDeleting">
+            Cancel
+          </Button>
+          <Button variant="destructive" @click="deleteContact" :disabled="isDeleting">
+            <Loader2 v-if="isDeleting" class="mr-2 h-4 w-4 animate-spin" />
+            <Trash2 v-else class="mr-2 h-4 w-4" />
+            {{ isDeleting ? 'Deleting...' : 'Delete Chat' }}
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   </div>
