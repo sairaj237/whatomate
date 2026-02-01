@@ -61,7 +61,7 @@ const WS_TYPE_CAMPAIGN_STATS_UPDATE = 'campaign_stats_update'
 const WS_TYPE_PERMISSIONS_UPDATED = 'permissions_updated'
 
 // Contact management types
-const WS_TYPE_CONTACT_DELETED = 'contact_deleted'
+const WS_TYPE_MESSAGES_DELETED = 'messages_deleted'
 
 interface WSMessage {
   type: string
@@ -168,8 +168,8 @@ class WebSocketService {
         case WS_TYPE_PERMISSIONS_UPDATED:
           this.handlePermissionsUpdated()
           break
-        case WS_TYPE_CONTACT_DELETED:
-          this.handleContactDeleted(store, message.payload)
+        case WS_TYPE_MESSAGES_DELETED:
+          this.handleMessagesDeleted(store, message.payload)
           break
         default:
           // Unknown message type, ignore
@@ -383,16 +383,16 @@ class WebSocketService {
     await authStore.fetchUser()
   }
 
-  private handleContactDeleted(store: ReturnType<typeof useContactsStore>, payload: any) {
+  private handleMessagesDeleted(store: ReturnType<typeof useContactsStore>, payload: any) {
     const contactId = payload.contact_id
     if (!contactId) return
 
-    // Use the store's handleContactDeleted method
-    store.handleContactDeleted(contactId)
+    // Use the store's handleMessagesDeleted method
+    store.handleMessagesDeleted(contactId)
 
     // Show notification to other users
-    toast.info('Chat deleted', {
-      description: `${payload.profile_name || payload.phone_number} chat has been deleted`,
+    toast.info('Messages deleted', {
+      description: `${payload.profile_name || payload.phone_number} messages have been deleted`,
       duration: 4000
     })
   }

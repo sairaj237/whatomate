@@ -86,7 +86,7 @@ export const useContactsStore = defineStore('contacts', () => {
   const filteredContacts = computed(() => {
     if (!searchQuery.value) return contacts.value
     const query = searchQuery.value.toLowerCase()
-    return contacts.value.filter(c =>
+    return contacts.value.filter((c: Contact) =>
       c.name.toLowerCase().includes(query) ||
       c.phone_number.includes(query) ||
       (c.profile_name?.toLowerCase().includes(query))
@@ -136,7 +136,7 @@ export const useContactsStore = defineStore('contacts', () => {
 
       if (newContacts.length > 0) {
         // Append new contacts, avoiding duplicates
-        const existingIds = new Set(contacts.value.map(c => c.id))
+        const existingIds = new Set(contacts.value.map((c: Contact) => c.id))
         const uniqueNew = newContacts.filter((c: Contact) => !existingIds.has(c.id))
         contacts.value = [...contacts.value, ...uniqueNew]
         contactsPage.value = nextPage
@@ -243,12 +243,12 @@ export const useContactsStore = defineStore('contacts', () => {
 
   function addMessage(message: Message) {
     // Check if message already exists
-    const exists = messages.value.some(m => m.id === message.id)
+    const exists = messages.value.some((m: Message) => m.id === message.id)
     if (!exists) {
       messages.value.push(message)
 
       // Update contact
-      const contact = contacts.value.find(c => c.id === message.contact_id)
+      const contact = contacts.value.find((c: Contact) => c.id === message.contact_id)
       if (contact) {
         contact.last_message_at = message.created_at
         if (message.direction === 'incoming') {
@@ -259,7 +259,7 @@ export const useContactsStore = defineStore('contacts', () => {
   }
 
   function updateMessageStatus(messageId: string, status: string) {
-    const message = messages.value.find(m => m.id === messageId)
+    const message = messages.value.find((m: Message) => m.id === messageId)
     if (message) {
       message.status = status
     }
@@ -279,7 +279,7 @@ export const useContactsStore = defineStore('contacts', () => {
   }
 
   function updateMessageReactions(messageId: string, reactions: Reaction[]) {
-    const message = messages.value.find(m => m.id === messageId)
+    const message = messages.value.find((m: Message) => m.id === messageId)
     if (message) {
       message.reactions = reactions
     }
@@ -288,30 +288,22 @@ export const useContactsStore = defineStore('contacts', () => {
   async function deleteContact(contactId: string) {
     try {
       await contactsService.delete(contactId)
-      // Remove contact from local store
-      contacts.value = contacts.value.filter(c => c.id !== contactId)
-      
-      // Clear current contact if it was the deleted one
+      // Clear messages for this contact but keep the contact
       if (currentContact.value?.id === contactId) {
-        currentContact.value = null
         clearMessages()
       }
       
       return true
     } catch (error) {
-      console.error('Failed to delete contact:', error)
+      console.error('Failed to delete messages:', error)
       throw error
     }
   }
 
-  // Handle WebSocket contact_deleted event
-  function handleContactDeleted(contactId: string) {
-    // Remove contact from local store
-    contacts.value = contacts.value.filter(c => c.id !== contactId)
-    
-    // Clear current contact if it was the deleted one
+  // Handle WebSocket messages_deleted event
+  function handleMessagesDeleted(contactId: string) {
+    // Clear messages for this contact if it's currently open
     if (currentContact.value?.id === contactId) {
-      currentContact.value = null
       clearMessages()
     }
   }
@@ -348,6 +340,6 @@ export const useContactsStore = defineStore('contacts', () => {
     clearReplyingTo,
     updateMessageReactions,
     deleteContact,
-    handleContactDeleted
+    handleMessagesDeleted
   }
 })

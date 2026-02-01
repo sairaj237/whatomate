@@ -777,13 +777,14 @@ async function deleteContact() {
   isDeleting.value = true
   try {
     await contactsStore.deleteContact(contactsStore.currentContact.id)
-    toast.success('Chat deleted successfully')
+    toast.success('Messages deleted successfully')
     isDeleteDialogOpen.value = false
     
-    // Navigate back to chat list
-    router.push('/chat')
+    // Clear messages from current view but keep the contact
+    contactsStore.clearMessages()
+    
   } catch (error: any) {
-    const message = error.response?.data?.message || 'Failed to delete chat'
+    const message = error.response?.data?.message || 'Failed to delete messages'
     toast.error(message)
   } finally {
     isDeleting.value = false
@@ -1393,7 +1394,7 @@ async function sendMediaMessage() {
                   class="text-destructive focus:text-destructive"
                 >
                   <Trash2 class="mr-2 h-4 w-4" />
-                  <span>Delete chat</span>
+                  <span>Delete messages</span>
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -1991,13 +1992,13 @@ async function sendMediaMessage() {
       </DialogContent>
     </Dialog>
 
-    <!-- Delete Chat Confirmation Dialog -->
+    <!-- Delete Messages Confirmation Dialog -->
     <Dialog v-model:open="isDeleteDialogOpen">
       <DialogContent class="max-w-sm">
         <DialogHeader>
-          <DialogTitle>Delete Chat</DialogTitle>
+          <DialogTitle>Delete Messages</DialogTitle>
           <DialogDescription>
-            Are you sure you want to delete this chat? This action cannot be undone and will permanently remove all messages and contact information.
+            Are you sure you want to delete all messages in this chat? This action cannot be undone and will permanently remove all messages and conversation history. The contact will remain available for future conversations.
           </DialogDescription>
         </DialogHeader>
         <div class="py-4">
@@ -2016,7 +2017,7 @@ async function sendMediaMessage() {
           <Button variant="destructive" @click="deleteContact" :disabled="isDeleting">
             <Loader2 v-if="isDeleting" class="mr-2 h-4 w-4 animate-spin" />
             <Trash2 v-else class="mr-2 h-4 w-4" />
-            {{ isDeleting ? 'Deleting...' : 'Delete Chat' }}
+            {{ isDeleting ? 'Deleting...' : 'Delete Messages' }}
           </Button>
         </DialogFooter>
       </DialogContent>
