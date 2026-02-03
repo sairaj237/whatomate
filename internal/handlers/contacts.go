@@ -79,12 +79,15 @@ type ReactionInfo struct {
 // ListContacts returns all contacts for the organization
 // Users without contacts:read permission only see contacts assigned to them
 func (a *App) ListContacts(r *fastglue.Request) error {
-	orgID := r.RequestCtx.UserValue("organization_id").(uuid.UUID)
-	userID, _ := r.RequestCtx.UserValue("user_id").(uuid.UUID)
+	orgID, userID, err := a.getOrgAndUserID(r)
+	if err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
+	}
 
 	// Pagination
 	pg := parsePagination(r)
 	search := string(r.RequestCtx.QueryArgs().Peek("search"))
+	tagsParam := string(r.RequestCtx.QueryArgs().Peek("tags"))
 
 	var contacts []models.Contact
 	query := a.ScopeToOrg(a.DB, userID, orgID)
@@ -97,6 +100,25 @@ func (a *App) ListContacts(r *fastglue.Request) error {
 	if search != "" {
 		searchPattern := "%" + search + "%"
 		query = query.Where("phone_number LIKE ? OR profile_name LIKE ?", searchPattern, searchPattern)
+	}
+
+	// Filter by tags (comma-separated, matches contacts that have ANY of the specified tags)
+	if tagsParam != "" {
+		tagList := strings.Split(tagsParam, ",")
+		// Trim whitespace from each tag and build OR conditions
+		// Using @> operator which leverages the GIN index on tags
+		conditions := make([]string, 0, len(tagList))
+		args := make([]any, 0, len(tagList))
+		for _, tag := range tagList {
+			tag = strings.TrimSpace(tag)
+			if tag != "" {
+				conditions = append(conditions, "tags @> ?")
+				args = append(args, fmt.Sprintf(`[%q]`, tag)) // JSON array: ["tagname"]
+			}
+		}
+		if len(conditions) > 0 {
+			query = query.Where("("+strings.Join(conditions, " OR ")+")", args...)
+		}
 	}
 
 	// Order by last message time (most recent first)
@@ -166,8 +188,10 @@ func (a *App) ListContacts(r *fastglue.Request) error {
 // GetContact returns a single contact
 // Users without contacts:read permission can only access contacts assigned to them
 func (a *App) GetContact(r *fastglue.Request) error {
-	orgID := r.RequestCtx.UserValue("organization_id").(uuid.UUID)
-	userID, _ := r.RequestCtx.UserValue("user_id").(uuid.UUID)
+	orgID, userID, err := a.getOrgAndUserID(r)
+	if err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
+	}
 	contactID, err := parsePathUUID(r, "id", "contact")
 	if err != nil {
 		return nil
@@ -231,8 +255,10 @@ func (a *App) GetContact(r *fastglue.Request) error {
 // Agents can only access messages for their assigned contacts
 // Supports cursor-based pagination with before_id for loading older messages
 func (a *App) GetMessages(r *fastglue.Request) error {
-	orgID := r.RequestCtx.UserValue("organization_id").(uuid.UUID)
-	userID, _ := r.RequestCtx.UserValue("user_id").(uuid.UUID)
+	orgID, userID, err := a.getOrgAndUserID(r)
+	if err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
+	}
 	contactID, err := parsePathUUID(r, "id", "contact")
 	if err != nil {
 		return nil
@@ -485,8 +511,10 @@ type ButtonContent struct {
 // SendMessage sends a message to a contact
 // Agents can only send messages to their assigned contacts
 func (a *App) SendMessage(r *fastglue.Request) error {
-	orgID := r.RequestCtx.UserValue("organization_id").(uuid.UUID)
-	userID, _ := r.RequestCtx.UserValue("user_id").(uuid.UUID)
+	orgID, userID, err := a.getOrgAndUserID(r)
+	if err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
+	}
 	contactID, err := parsePathUUID(r, "id", "contact")
 	if err != nil {
 		return nil
@@ -622,8 +650,10 @@ func truncateString(s string, maxLen int) string {
 
 // SendMediaMessage sends a media message (image, document, video, audio) to a contact
 func (a *App) SendMediaMessage(r *fastglue.Request) error {
-	orgID := r.RequestCtx.UserValue("organization_id").(uuid.UUID)
-	userID, _ := r.RequestCtx.UserValue("user_id").(uuid.UUID)
+	orgID, userID, err := a.getOrgAndUserID(r)
+	if err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
+	}
 
 	// Parse multipart form
 	form, err := r.RequestCtx.MultipartForm()
@@ -803,8 +833,10 @@ type SendReactionRequest struct {
 
 // SendReaction sends a reaction to a message
 func (a *App) SendReaction(r *fastglue.Request) error {
-	orgID := r.RequestCtx.UserValue("organization_id").(uuid.UUID)
-	userID, _ := r.RequestCtx.UserValue("user_id").(uuid.UUID)
+	orgID, userID, err := a.getOrgAndUserID(r)
+	if err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
+	}
 	contactID, err := parsePathUUID(r, "id", "contact")
 	if err != nil {
 		return nil
@@ -989,12 +1021,10 @@ type AssignContactRequest struct {
 // AssignContact assigns a contact to a user (agent)
 // Only users with write permission can assign contacts
 func (a *App) AssignContact(r *fastglue.Request) error {
-	orgID, err := a.getOrgID(r)
+	orgID, userID, err := a.getOrgAndUserID(r)
 	if err != nil {
 		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
 	}
-
-	userID, _ := r.RequestCtx.UserValue("user_id").(uuid.UUID)
 
 	// Only users with write permission can assign contacts
 	if !a.HasPermission(userID, models.ResourceContacts, models.ActionWrite) {
@@ -1007,8 +1037,8 @@ func (a *App) AssignContact(r *fastglue.Request) error {
 	}
 
 	var req AssignContactRequest
-	if err := r.Decode(&req, "json"); err != nil {
-		return r.SendErrorEnvelope(fasthttp.StatusBadRequest, "Invalid request body", nil, "")
+	if err := a.decodeRequest(r, &req); err != nil {
+		return nil
 	}
 
 	// Get contact
@@ -1049,8 +1079,10 @@ type ContactSessionDataResponse struct {
 // GetContactSessionData returns session data and panel configuration for a contact
 // Used by the contact info panel in the chat view
 func (a *App) GetContactSessionData(r *fastglue.Request) error {
-	orgID := r.RequestCtx.UserValue("organization_id").(uuid.UUID)
-	userID, _ := r.RequestCtx.UserValue("user_id").(uuid.UUID)
+	orgID, userID, err := a.getOrgAndUserID(r)
+	if err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
+	}
 	contactID, err := parsePathUUID(r, "id", "contact")
 	if err != nil {
 		return nil
@@ -1137,108 +1169,68 @@ func (a *App) GetContactSessionData(r *fastglue.Request) error {
 	return r.SendEnvelope(response)
 }
 
- / /   D e l e t e C o n t a c t   p e r m a n e n t l y   d e l e t e s   a   c o n t a c t   a n d   a l l   a s s o c i a t e d   m e s s a g e s 
- / /   O n l y   u s e r s   w i t h   d e l e t e   p e r m i s s i o n   c a n   d e l e t e   c o n t a c t s 
- f u n c   ( a   * A p p )   D e l e t e C o n t a c t ( r   * f a s t g l u e . R e q u e s t )   e r r o r   { 
- o r g I D ,   e r r   : =   a . g e t O r g I D ( r ) 
- i f   e r r   ! =   n i l   { 
- r e t u r n   r . S e n d E r r o r E n v e l o p e ( f a s t h t t p . S t a t u s U n a u t h o r i z e d ,   " U n a u t h o r i z e d " ,   n i l ,   " " ) 
- } 
- 
- u s e r I D ,   _   : =   r . R e q u e s t C t x . U s e r V a l u e ( " u s e r _ i d " ) . ( u u i d . U U I D ) 
- 
- / /   O n l y   u s e r s   w i t h   d e l e t e   p e r m i s s i o n   c a n   d e l e t e   c o n t a c t s 
- i f   ! a . H a s P e r m i s s i o n ( u s e r I D ,   m o d e l s . R e s o u r c e C o n t a c t s ,   m o d e l s . A c t i o n D e l e t e )   { 
- r e t u r n   r . S e n d E r r o r E n v e l o p e ( f a s t h t t p . S t a t u s F o r b i d d e n ,   " Y o u   d o   n o t   h a v e   p e r m i s s i o n   t o   d e l e t e   c o n t a c t s " ,   n i l ,   " " ) 
- } 
- 
- c o n t a c t I D ,   e r r   : =   p a r s e P a t h U U I D ( r ,   " i d " ,   " c o n t a c t " ) 
- i f   e r r   ! =   n i l   { 
- r e t u r n   n i l 
- } 
- 
- / /   S t a r t   t r a n s a c t i o n   f o r   s a f e   d e l e t i o n 
- t x   : =   a . D B . B e g i n ( ) 
- d e f e r   f u n c ( )   { 
- i f   r   : =   r e c o v e r ( ) ;   r   ! =   n i l   { 
- t x . R o l l b a c k ( ) 
- } 
- } ( ) 
- 
- / /   G e t   c o n t a c t   t o   v e r i f y   o w n e r s h i p   a n d   r e t r i e v e   i n f o   f o r   l o g g i n g 
- v a r   c o n t a c t   m o d e l s . C o n t a c t 
- q u e r y   : =   t x . W h e r e ( " i d   =   ?   A N D   o r g a n i z a t i o n _ i d   =   ? " ,   c o n t a c t I D ,   o r g I D ) 
- i f   ! a . H a s P e r m i s s i o n ( u s e r I D ,   m o d e l s . R e s o u r c e C o n t a c t s ,   m o d e l s . A c t i o n R e a d )   { 
- / /   U s e r s   w i t h o u t   f u l l   r e a d   p e r m i s s i o n   c a n   o n l y   d e l e t e   t h e i r   a s s i g n e d   c o n t a c t s 
- q u e r y   =   q u e r y . W h e r e ( " a s s i g n e d _ u s e r _ i d   =   ? " ,   u s e r I D ) 
- } 
- i f   e r r   : =   q u e r y . F i r s t ( & c o n t a c t ) . E r r o r ;   e r r   ! =   n i l   { 
- t x . R o l l b a c k ( ) 
- i f   e r r   = =   g o r m . E r r R e c o r d N o t F o u n d   { 
- r e t u r n   r . S e n d E r r o r E n v e l o p e ( f a s t h t t p . S t a t u s N o t F o u n d ,   " C o n t a c t   n o t   f o u n d " ,   n i l ,   " " ) 
- } 
- a . L o g . E r r o r ( " F a i l e d   t o   g e t   c o n t a c t   f o r   d e l e t i o n " ,   " e r r o r " ,   e r r ,   " c o n t a c t _ i d " ,   c o n t a c t I D ) 
- r e t u r n   r . S e n d E r r o r E n v e l o p e ( f a s t h t t p . S t a t u s I n t e r n a l S e r v e r E r r o r ,   " F a i l e d   t o   r e t r i e v e   c o n t a c t " ,   n i l ,   " " ) 
- } 
- 
- / /   D e l e t e   a l l   m e s s a g e s   a s s o c i a t e d   w i t h   t h i s   c o n t a c t 
- i f   e r r   : =   t x . W h e r e ( " c o n t a c t _ i d   =   ? " ,   c o n t a c t I D ) . D e l e t e ( & m o d e l s . M e s s a g e { } ) . E r r o r ;   e r r   ! =   n i l   { 
- t x . R o l l b a c k ( ) 
- a . L o g . E r r o r ( " F a i l e d   t o   d e l e t e   c o n t a c t   m e s s a g e s " ,   " e r r o r " ,   e r r ,   " c o n t a c t _ i d " ,   c o n t a c t I D ) 
- r e t u r n   r . S e n d E r r o r E n v e l o p e ( f a s t h t t p . S t a t u s I n t e r n a l S e r v e r E r r o r ,   " F a i l e d   t o   d e l e t e   c o n t a c t   m e s s a g e s " ,   n i l ,   " " ) 
- } 
- 
- / /   D e l e t e   a n y   a s s o c i a t e d   c h a t b o t   s e s s i o n s 
- i f   e r r   : =   t x . W h e r e ( " c o n t a c t _ i d   =   ? " ,   c o n t a c t I D ) . D e l e t e ( & m o d e l s . C h a t b o t S e s s i o n { } ) . E r r o r ;   e r r   ! =   n i l   { 
- t x . R o l l b a c k ( ) 
- a . L o g . E r r o r ( " F a i l e d   t o   d e l e t e   c h a t b o t   s e s s i o n s " ,   " e r r o r " ,   e r r ,   " c o n t a c t _ i d " ,   c o n t a c t I D ) 
- r e t u r n   r . S e n d E r r o r E n v e l o p e ( f a s t h t t p . S t a t u s I n t e r n a l S e r v e r E r r o r ,   " F a i l e d   t o   d e l e t e   c h a t b o t   s e s s i o n s " ,   n i l ,   " " ) 
- } 
- 
- / /   D e l e t e   a n y   a s s o c i a t e d   a g e n t   t r a n s f e r s 
- i f   e r r   : =   t x . W h e r e ( " c o n t a c t _ i d   =   ? " ,   c o n t a c t I D ) . D e l e t e ( & m o d e l s . A g e n t T r a n s f e r { } ) . E r r o r ;   e r r   ! =   n i l   { 
- t x . R o l l b a c k ( ) 
- a . L o g . E r r o r ( " F a i l e d   t o   d e l e t e   a g e n t   t r a n s f e r s " ,   " e r r o r " ,   e r r ,   " c o n t a c t _ i d " ,   c o n t a c t I D ) 
- r e t u r n   r . S e n d E r r o r E n v e l o p e ( f a s t h t t p . S t a t u s I n t e r n a l S e r v e r E r r o r ,   " F a i l e d   t o   d e l e t e   a g e n t   t r a n s f e r s " ,   n i l ,   " " ) 
- } 
- 
- / /   D e l e t e   t h e   c o n t a c t   ( s o f t   d e l e t e   -   w i l l   s e t   d e l e t e d _ a t   t i m e s t a m p ) 
- i f   e r r   : =   t x . D e l e t e ( & c o n t a c t ) . E r r o r ;   e r r   ! =   n i l   { 
- t x . R o l l b a c k ( ) 
- a . L o g . E r r o r ( " F a i l e d   t o   d e l e t e   c o n t a c t " ,   " e r r o r " ,   e r r ,   " c o n t a c t _ i d " ,   c o n t a c t I D ) 
- r e t u r n   r . S e n d E r r o r E n v e l o p e ( f a s t h t t p . S t a t u s I n t e r n a l S e r v e r E r r o r ,   " F a i l e d   t o   d e l e t e   c o n t a c t " ,   n i l ,   " " ) 
- } 
- 
- / /   C o m m i t   t h e   t r a n s a c t i o n 
- i f   e r r   : =   t x . C o m m i t ( ) . E r r o r ;   e r r   ! =   n i l   { 
- a . L o g . E r r o r ( " F a i l e d   t o   c o m m i t   c o n t a c t   d e l e t i o n   t r a n s a c t i o n " ,   " e r r o r " ,   e r r ,   " c o n t a c t _ i d " ,   c o n t a c t I D ) 
- r e t u r n   r . S e n d E r r o r E n v e l o p e ( f a s t h t t p . S t a t u s I n t e r n a l S e r v e r E r r o r ,   " F a i l e d   t o   c o m p l e t e   d e l e t i o n " ,   n i l ,   " " ) 
- } 
- 
- / /   L o g   t h e   d e l e t i o n 
- a . L o g . I n f o ( " C o n t a c t   d e l e t e d   s u c c e s s f u l l y " ,   
- " c o n t a c t _ i d " ,   c o n t a c t I D ,   
- " p h o n e _ n u m b e r " ,   c o n t a c t . P h o n e N u m b e r , 
- " p r o f i l e _ n a m e " ,   c o n t a c t . P r o f i l e N a m e , 
- " d e l e t e d _ b y " ,   u s e r I D , 
- " o r g a n i z a t i o n _ i d " ,   o r g I D , 
- ) 
- 
- / /   B r o a d c a s t   d e l e t i o n   v i a   W e b S o c k e t   f o r   r e a l - t i m e   U I   u p d a t e s 
- i f   a . W S H u b   ! =   n i l   { 
- a . W S H u b . B r o a d c a s t T o O r g ( o r g I D ,   w e b s o c k e t . W S M e s s a g e { 
- T y p e :   " c o n t a c t _ d e l e t e d " , 
- P a y l o a d :   m a p [ s t r i n g ] a n y { 
- " c o n t a c t _ i d " :   c o n t a c t I D . S t r i n g ( ) , 
- " p h o n e _ n u m b e r " :   c o n t a c t . P h o n e N u m b e r , 
- " p r o f i l e _ n a m e " :   c o n t a c t . P r o f i l e N a m e , 
- } , 
- } ) 
- } 
- 
- r e t u r n   r . S e n d E n v e l o p e ( m a p [ s t r i n g ] a n y { 
- " m e s s a g e " :   " C o n t a c t   d e l e t e d   s u c c e s s f u l l y " , 
- " c o n t a c t _ i d " :   c o n t a c t I D . S t r i n g ( ) , 
- } ) 
- }  
- 
+// UpdateContactTagsRequest represents the request body for updating contact tags
+type UpdateContactTagsRequest struct {
+	Tags []string `json:"tags"`
+}
+
+// UpdateContactTags updates the tags on a contact
+func (a *App) UpdateContactTags(r *fastglue.Request) error {
+	orgID, userID, err := a.getOrgAndUserID(r)
+	if err != nil {
+		return r.SendErrorEnvelope(fasthttp.StatusUnauthorized, "Unauthorized", nil, "")
+	}
+
+	// Check permission - need contacts:write to update tags on contacts
+	if !a.HasPermission(userID, models.ResourceContacts, models.ActionWrite) {
+		return r.SendErrorEnvelope(fasthttp.StatusForbidden, "You do not have permission to update contact tags", nil, "")
+	}
+
+	contactID, err := parsePathUUID(r, "id", "contact")
+	if err != nil {
+		return nil
+	}
+
+	var req UpdateContactTagsRequest
+	if err := a.decodeRequest(r, &req); err != nil {
+		return nil
+	}
+
+	// Get contact
+	contact, err := findByIDAndOrg[models.Contact](a.DB, r, contactID, orgID, "Contact")
+	if err != nil {
+		return nil
+	}
+
+	// Convert tags to JSONBArray
+	tagsArray := make(models.JSONBArray, len(req.Tags))
+	for i, tag := range req.Tags {
+		tagsArray[i] = tag
+	}
+
+	// Update contact tags
+	if err := a.DB.Model(contact).Update("tags", tagsArray).Error; err != nil {
+		a.Log.Error("Failed to update contact tags", "error", err)
+		return r.SendErrorEnvelope(fasthttp.StatusInternalServerError, "Failed to update contact tags", nil, "")
+	}
+
+	// Reload contact to get updated tags
+	if err := a.DB.First(contact, contactID).Error; err != nil {
+		a.Log.Error("Failed to reload contact", "error", err)
+	}
+
+	// Build response with tag details
+	tags := []string{}
+	if contact.Tags != nil {
+		for _, t := range contact.Tags {
+			if s, ok := t.(string); ok {
+				tags = append(tags, s)
+			}
+		}
+	}
+
+	return r.SendEnvelope(map[string]any{
+		"message": "Contact tags updated",
+		"tags":    tags,
+	})
+}
